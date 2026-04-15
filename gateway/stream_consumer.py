@@ -82,11 +82,13 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        self._reply_to = reply_to
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -317,7 +319,7 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit
                         )
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                            await self._send_new_chunk(chunk, self._message_id or self._reply_to)
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
@@ -450,6 +452,7 @@ class GatewayStreamConsumer:
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        text = text.lstrip("\n")
         if not text.strip():
             return reply_to_id
         try:
@@ -531,6 +534,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
+                    reply_to=self._reply_to if not sent_any_chunk else None,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -607,6 +611,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._reply_to,
                 metadata=self.metadata,
             )
             if result.success:
@@ -627,6 +632,11 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Strip leading newlines that _fire_stream_delta prepends for
+        # paragraph separation between tool iterations.  These are needed
+        # in the CLI's single-box display but create unwanted blank lines
+        # in platform messages (both first sends AND progressive edits).
+        text = text.lstrip("\n")
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text
@@ -718,6 +728,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=self._reply_to,
                     metadata=self.metadata,
                 )
                 if result.success:
